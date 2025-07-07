@@ -257,14 +257,19 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	query, _ := args["query"].(string)
 	cacheKey := generateCacheKey(map[string]interface{}{"query": query, "page": page})
 
+	log.Printf("Fetching page %d for query: %s", page, query)
+
 	// Check cache
 	cached, err := getCachedData[GrepAppResponse](cacheKey)
 	if err != nil {
-		log.Printf("Cache read error: %v", err) // Log but continue
+		log.Printf("Cache read error for key %s: %v", cacheKey, err)
 	}
 	if cached != nil {
+		log.Printf("Cache hit for query '%s', page %d", query, page)
 		return cached, nil
 	}
+
+	log.Printf("Cache miss for query '%s', page %d - fetching from API", query, page)
 
 	// Fetch from API
 	reqURL, _ := url.Parse(grepAppAPIBaseURL)
@@ -291,30 +296,45 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	}
 	reqURL.RawQuery = q.Encode()
 
+	log.Printf("Making HTTP request to: %s", reqURL.String())
+
 	req, err := http.NewRequestWithContext(ctx, "GET", reqURL.String(), nil)
 	if err != nil {
+		log.Printf("Failed to create HTTP request: %v", err)
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
+	duration := time.Since(start)
+	
 	if err != nil {
+		log.Printf("HTTP request failed after %v: %v", duration, err)
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	log.Printf("HTTP request completed in %v, status: %d", duration, resp.StatusCode)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("API request failed with status %d, body: %s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var apiResponse GrepAppResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		log.Printf("Failed to decode API response: %v", err)
 		return nil, fmt.Errorf("failed to decode API response: %w", err)
 	}
 
+	log.Printf("Successfully parsed API response: %d hits, %d total results", len(apiResponse.Hits.Hits), apiResponse.Facets.Count)
+
 	// Save to cache
 	if err := cacheData(cacheKey, apiResponse, query); err != nil {
-		log.Printf("Cache write error: %v", err)
+		log.Printf("Cache write error for key %s: %v", cacheKey, err)
+	} else {
+		log.Printf("Successfully cached response for query '%s', page %d", query, page)
 	}
 
 	return &apiResponse, nil
@@ -364,6 +384,9 @@ func parseGitHubRepo(repoString string) (owner, repo string, err error) {
 
 // fetchGitHubFiles retrieves multiple files from GitHub concurrently.
 func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []GitHubFileRequest) []RetrievedFile {
+	log.Printf("🔗 Starting GitHub file retrieval for %d files", len(requests))
+	start := time.Now()
+	
 	var wg sync.WaitGroup
 	resultsChan := make(chan RetrievedFile, len(requests))
 
@@ -371,21 +394,33 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 		wg.Add(1)
 		go func(req GitHubFileRequest, num int) {
 			defer wg.Done()
+			
+			repoPath := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
+			log.Printf("📁 Fetching file %d: %s/%s", num, repoPath, req.Path)
+			
+			fileStart := time.Now()
 			fileContent, _, _, err := ghClient.Repositories.GetContents(ctx, req.Owner, req.Repo, req.Path, nil)
+			fileDuration := time.Since(fileStart)
+			
 			if err != nil {
-				resultsChan <- RetrievedFile{Number: num, Repo: fmt.Sprintf("%s/%s", req.Owner, req.Repo), Path: req.Path, Error: err.Error()}
+				log.Printf("❌ Failed to fetch file %d (%s/%s) after %v: %v", num, repoPath, req.Path, fileDuration, err)
+				resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Error: err.Error()}
 				return
 			}
 			if fileContent == nil {
-				resultsChan <- RetrievedFile{Number: num, Repo: fmt.Sprintf("%s/%s", req.Owner, req.Repo), Path: req.Path, Error: "file content is nil"}
+				log.Printf("❌ File %d (%s/%s) returned nil content after %v", num, repoPath, req.Path, fileDuration)
+				resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Error: "file content is nil"}
 				return
 			}
 			content, err := fileContent.GetContent()
 			if err != nil {
-				resultsChan <- RetrievedFile{Number: num, Repo: fmt.Sprintf("%s/%s", req.Owner, req.Repo), Path: req.Path, Error: fmt.Sprintf("failed to get file content: %v", err)}
+				log.Printf("❌ Failed to decode file %d (%s/%s) after %v: %v", num, repoPath, req.Path, fileDuration, err)
+				resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Error: fmt.Sprintf("failed to get file content: %v", err)}
 				return
 			}
-			resultsChan <- RetrievedFile{Number: num, Repo: fmt.Sprintf("%s/%s", req.Owner, req.Repo), Path: req.Path, Content: content}
+			
+			log.Printf("✅ Successfully fetched file %d (%s/%s) in %v (%d bytes)", num, repoPath, req.Path, fileDuration, len(content))
+			resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Content: content}
 		}(req, i+1) // Use index for temporary numbering before matching with original
 	}
 
@@ -393,26 +428,45 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 	close(resultsChan)
 
 	var results []RetrievedFile
+	successCount := 0
+	errorCount := 0
+	
 	for res := range resultsChan {
 		results = append(results, res)
+		if res.Error == "" {
+			successCount++
+		} else {
+			errorCount++
+		}
 	}
+	
+	duration := time.Since(start)
+	log.Printf("🎯 GitHub file retrieval completed in %v: %d successful, %d errors", duration, successCount, errorCount)
+	
 	return results
 }
 
 // batchRetrieveFiles orchestrates the batch retrieval process.
 func batchRetrieveFiles(ctx context.Context, ghClient *github.Client, query string, resultNumbers []int) (*BatchRetrievalResult, error) {
+	log.Printf("🔄 Starting batch file retrieval process for query: '%s'", query)
+	
 	cachedHits, err := getQueryResults(query)
 	if err != nil {
+		log.Printf("❌ Failed to get cached query results: %v", err)
 		return nil, fmt.Errorf("failed to get cached query results: %w", err)
 	}
 	if cachedHits == nil {
+		log.Printf("⚠️ No cached results found for query: '%s'", query)
 		return &BatchRetrievalResult{Success: false, Error: "No cached results found for query: " + query}, nil
 	}
+
+	log.Printf("✅ Found cached results for query: '%s'", query)
 
 	allNumberedHits := flattenHits(cachedHits)
 	hitsToProcess := allNumberedHits
 
 	if len(resultNumbers) > 0 {
+		log.Printf("🔢 Filtering to specific result numbers: %v", resultNumbers)
 		var filteredHits []NumberedHit
 		numberSet := make(map[int]struct{})
 		for _, n := range resultNumbers {
@@ -424,37 +478,53 @@ func batchRetrieveFiles(ctx context.Context, ghClient *github.Client, query stri
 			}
 		}
 		hitsToProcess = filteredHits
+		log.Printf("🎯 Filtered to %d specific results from %d total", len(hitsToProcess), len(allNumberedHits))
+	} else {
+		log.Printf("📊 Processing all %d available results", len(allNumberedHits))
 	}
 
 	if len(hitsToProcess) == 0 {
+		log.Printf("❌ No results found for the given result numbers")
 		return &BatchRetrievalResult{Success: false, Error: "No results found for the given result numbers."}, nil
 	}
 
 	var fileRequests []GitHubFileRequest
-	// Map to restore original numbering
 	requestNumberMap := make(map[int]int)
+	skipCount := 0
+	
+	log.Printf("🔍 Preparing GitHub file requests for %d hits", len(hitsToProcess))
+	
 	for i, hit := range hitsToProcess {
 		owner, repo, err := parseGitHubRepo(hit.Repo)
 		if err != nil {
-			log.Printf("Skipping invalid repo format: %s", hit.Repo)
+			log.Printf("⚠️ Skipping invalid repo format: %s (error: %v)", hit.Repo, err)
+			skipCount++
 			continue
 		}
 		fileRequests = append(fileRequests, GitHubFileRequest{Owner: owner, Repo: repo, Path: hit.Path})
-		requestNumberMap[i+1] = hit.Number
+		requestNumberMap[i+1-skipCount] = hit.Number
 	}
+
+	if skipCount > 0 {
+		log.Printf("⚠️ Skipped %d invalid repositories", skipCount)
+	}
+
+	log.Printf("📋 Created %d GitHub file requests", len(fileRequests))
 
 	ghResults := fetchGitHubFiles(ctx, ghClient, fileRequests)
 
-	// Map results back to their original numbers
+	log.Printf("🔄 Mapping results back to original numbering")
 	finalFiles := make([]RetrievedFile, len(ghResults))
 	for i, file := range ghResults {
 		finalFiles[i] = file
-		finalFiles[i].Number = requestNumberMap[file.Number] // Remap index to original number
+		finalFiles[i].Number = requestNumberMap[file.Number]
 	}
-	// Sort by original number
+	
 	sort.Slice(finalFiles, func(i, j int) bool {
 		return finalFiles[i].Number < finalFiles[j].Number
 	})
+
+	log.Printf("✅ Batch retrieval process completed: %d files processed", len(finalFiles))
 
 	return &BatchRetrievalResult{Success: true, Files: finalFiles}, nil
 }
@@ -550,12 +620,17 @@ func main() {
 	flag.IntVar(&port, "port", 8603, "Port for http transport")
 	flag.Parse()
 
-	log.Println("Initializing GrepApp MCP Server...")
+	log.Printf("🚀 Initializing GrepApp MCP Server v1.0.0-go")
+	log.Printf("🔧 Configuration: transport=%s, port=%d", transport, port)
 
 	// Initialize HTTP and GitHub clients
+	log.Printf("🌐 Initializing HTTP client with 30s timeout")
 	httpClient := &http.Client{Timeout: 30 * time.Second}
+	
+	log.Printf("🐙 Initializing GitHub client")
 	ghClient := github.NewClient(nil)
 
+	log.Printf("⚙️ Creating MCP server with tool capabilities and recovery")
 	s := server.NewMCPServer(
 		"GrepApp Search Server",
 		"1.0.0-go",
@@ -564,6 +639,7 @@ func main() {
 	)
 
 	// --- searchCode Tool ---
+	log.Printf("🔧 Registering searchCode tool")
 	searchCodeTool := mcp.NewTool("searchCode",
 		mcp.WithDescription("Searches public code on GitHub using the grep.app API."),
 		mcp.WithString("query", mcp.Description("The search query string."), mcp.Required()),
@@ -579,23 +655,33 @@ func main() {
 
 	s.AddTool(searchCodeTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
-		log.Printf("Executing searchCode tool with args: %+v", args)
+		query, _ := args["query"].(string)
+		log.Printf("🔍 Starting searchCode tool execution for query: '%s'", query)
+		log.Printf("📋 Tool arguments: %+v", args)
 
+		start := time.Now()
 		page := 1
 		allHits := &Hits{}
 		totalCount := 0
 
+		log.Printf("📄 Beginning page-by-page search (max %d pages)", maxSearchPages)
+
 		for {
+			log.Printf("📖 Processing page %d", page)
 			results, err := fetchGrepAppPage(ctx, httpClient, args, page)
 			if err != nil {
+				log.Printf("❌ searchCode tool failed on page %d: %v", page, err)
 				return mcp.NewToolResultError(fmt.Sprintf("API fetch failed: %v", err)), nil
 			}
 
 			pageHits := &Hits{Hits: make(map[string]map[string]map[string]string)}
+			snippetErrors := 0
+			
 			for _, hit := range results.Hits.Hits {
 				parsed, err := parseSnippet(hit.Content.Snippet)
 				if err != nil {
-					log.Printf("Failed to parse snippet for repo %s: %v", hit.Repo.Raw, err)
+					snippetErrors++
+					log.Printf("⚠️ Failed to parse snippet for repo %s/%s: %v", hit.Repo.Raw, hit.Path.Raw, err)
 					continue
 				}
 				if pageHits.Hits[hit.Repo.Raw] == nil {
@@ -609,43 +695,73 @@ func main() {
 				}
 			}
 
+			if snippetErrors > 0 {
+				log.Printf("⚠️ Page %d had %d snippet parsing errors", page, snippetErrors)
+			}
+
+			log.Printf("✅ Page %d processed: %d repositories found", page, len(pageHits.Hits))
+
 			mergeHits(allHits, pageHits)
 			totalCount = results.Facets.Count
 
+			log.Printf("📊 Total progress: %d repos collected, %d total results available", len(allHits.Hits), totalCount)
+
 			if page >= results.Facets.Pages || page >= maxSearchPages {
+				log.Printf("🏁 Search complete: reached page limit (page %d, max pages: %d, search limit: %d)", page, results.Facets.Pages, maxSearchPages)
 				break
 			}
 			page++
 		}
 
+		duration := time.Since(start)
+
 		if len(allHits.Hits) == 0 {
+			log.Printf("📭 No results found for query '%s' after %v", query, duration)
 			return mcp.NewToolResultText("No results found for your query."), nil
 		}
 
+		// Count final results
+		totalFiles := 0
+		totalLines := 0
+		for _, repoData := range allHits.Hits {
+			for _, fileData := range repoData {
+				totalFiles++
+				totalLines += len(fileData)
+			}
+		}
+
+		log.Printf("🎯 Search completed successfully in %v: %d repos, %d files, %d matched lines", duration, len(allHits.Hits), totalFiles, totalLines)
+
 		// Cache the complete result for batch retrieval
-		query, _ := args["query"].(string)
 		completeCacheKey := generateCacheKey(map[string]interface{}{"query": query, "complete": true})
 		fullRes := fullSearchResult{Hits: *allHits, Count: totalCount}
 		if err := cacheData(completeCacheKey, fullRes, query); err != nil {
-			log.Printf("Failed to cache complete results: %v", err)
+			log.Printf("⚠️ Failed to cache complete results: %v", err)
+		} else {
+			log.Printf("💾 Successfully cached complete results for future batch retrieval")
 		}
 
 		// Format output
 		if jsonOutput, _ := args["jsonOutput"].(bool); jsonOutput {
+			log.Printf("📤 Returning JSON output format")
 			jsonBytes, err := json.MarshalIndent(allHits.Hits, "", "  ")
 			if err != nil {
+				log.Printf("❌ JSON marshaling failed: %v", err)
 				return mcp.NewToolResultError(fmt.Sprintf("failed to marshal JSON: %v", err)), nil
 			}
 			return mcp.NewToolResultText(string(jsonBytes)), nil
 		}
 		if numberedOutput, _ := args["numberedOutput"].(bool); numberedOutput {
+			log.Printf("📤 Returning numbered list output format")
 			return mcp.NewToolResultText(formatResultsAsNumberedList(allHits)), nil
 		}
 
+		log.Printf("📤 Returning formatted text output")
 		return mcp.NewToolResultText(formatResultsAsText(allHits)), nil
 	})
 
 	// --- batchRetrievalTool ---
+	log.Printf("🔧 Registering batchRetrievalTool")
 	batchRetrievalTool := mcp.NewTool("batchRetrievalTool",
 		mcp.WithDescription("Retrieve file contents for specified search results from a cached query."),
 		mcp.WithString("query", mcp.Description("The original search query."), mcp.Required()),
@@ -654,10 +770,14 @@ func main() {
 
 	s.AddTool(batchRetrievalTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
-		log.Printf("Executing batchRetrievalTool with args: %+v", args)
+		log.Printf("📦 Starting batchRetrievalTool execution")
+		log.Printf("📋 Tool arguments: %+v", args)
+
+		start := time.Now()
 
 		query, ok := args["query"].(string)
 		if !ok || query == "" {
+			log.Printf("❌ batchRetrievalTool failed: missing query parameter")
 			return mcp.NewToolResultError("query parameter is required"), nil
 		}
 
@@ -670,31 +790,57 @@ func main() {
 			}
 		}
 
+		log.Printf("🔍 Retrieving files for query: '%s', result numbers: %v", query, resultNumbers)
+
 		result, err := batchRetrieveFiles(ctx, ghClient, query, resultNumbers)
 		if err != nil {
+			duration := time.Since(start)
+			log.Printf("❌ batchRetrievalTool failed after %v: %v", duration, err)
 			return mcp.NewToolResultError(fmt.Sprintf("batch retrieval failed: %v", err)), nil
+		}
+
+		duration := time.Since(start)
+		
+		if result.Success {
+			successCount := 0
+			errorCount := 0
+			for _, file := range result.Files {
+				if file.Error == "" {
+					successCount++
+				} else {
+					errorCount++
+				}
+			}
+			log.Printf("🎯 batchRetrievalTool completed successfully in %v: %d files retrieved, %d errors", duration, successCount, errorCount)
+		} else {
+			log.Printf("⚠️ batchRetrievalTool completed with errors in %v: %s", duration, result.Error)
 		}
 
 		resultBytes, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
+			log.Printf("❌ JSON marshaling failed: %v", err)
 			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal result: %v", err)), nil
 		}
 
+		log.Printf("📤 Returning batch retrieval results")
 		return mcp.NewToolResultText(string(resultBytes)), nil
 	})
 
 	// --- Start Server ---
 	if transport == "http" {
+		log.Printf("🚀 Starting HTTP server mode")
 		httpServer := server.NewStreamableHTTPServer(s)
 		addr := fmt.Sprintf(":%d", port)
-		log.Printf("HTTP server listening on %s/mcp", addr)
+		log.Printf("🌐 HTTP server listening on %s/mcp", addr)
+		log.Printf("📊 Server ready to handle MCP requests")
 		if err := httpServer.Start(addr); err != nil {
-			log.Fatalf("Server error: %v", err)
+			log.Fatalf("💥 Server startup failed: %v", err)
 		}
 	} else {
-		log.Println("Starting server in stdio mode...")
+		log.Printf("🚀 Starting STDIO server mode")
+		log.Printf("📊 Server ready to handle MCP requests via stdin/stdout")
 		if err := server.ServeStdio(s); err != nil {
-			log.Fatalf("Server error: %v", err)
+			log.Fatalf("💥 Server startup failed: %v", err)
 		}
 	}
 }
