@@ -307,7 +307,7 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	start := time.Now()
 	resp, err := client.Do(req)
 	duration := time.Since(start)
-	
+
 	if err != nil {
 		log.Printf("HTTP request failed after %v: %v", duration, err)
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -386,7 +386,7 @@ func parseGitHubRepo(repoString string) (owner, repo string, err error) {
 func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []GitHubFileRequest) []RetrievedFile {
 	log.Printf("🔗 Starting GitHub file retrieval for %d files", len(requests))
 	start := time.Now()
-	
+
 	var wg sync.WaitGroup
 	resultsChan := make(chan RetrievedFile, len(requests))
 
@@ -394,14 +394,14 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 		wg.Add(1)
 		go func(req GitHubFileRequest, num int) {
 			defer wg.Done()
-			
+
 			repoPath := fmt.Sprintf("%s/%s", req.Owner, req.Repo)
 			log.Printf("📁 Fetching file %d: %s/%s", num, repoPath, req.Path)
-			
+
 			fileStart := time.Now()
 			fileContent, _, _, err := ghClient.Repositories.GetContents(ctx, req.Owner, req.Repo, req.Path, nil)
 			fileDuration := time.Since(fileStart)
-			
+
 			if err != nil {
 				log.Printf("❌ Failed to fetch file %d (%s/%s) after %v: %v", num, repoPath, req.Path, fileDuration, err)
 				resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Error: err.Error()}
@@ -418,7 +418,7 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 				resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Error: fmt.Sprintf("failed to get file content: %v", err)}
 				return
 			}
-			
+
 			log.Printf("✅ Successfully fetched file %d (%s/%s) in %v (%d bytes)", num, repoPath, req.Path, fileDuration, len(content))
 			resultsChan <- RetrievedFile{Number: num, Repo: repoPath, Path: req.Path, Content: content}
 		}(req, i+1) // Use index for temporary numbering before matching with original
@@ -430,7 +430,7 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 	var results []RetrievedFile
 	successCount := 0
 	errorCount := 0
-	
+
 	for res := range resultsChan {
 		results = append(results, res)
 		if res.Error == "" {
@@ -439,17 +439,17 @@ func fetchGitHubFiles(ctx context.Context, ghClient *github.Client, requests []G
 			errorCount++
 		}
 	}
-	
+
 	duration := time.Since(start)
 	log.Printf("🎯 GitHub file retrieval completed in %v: %d successful, %d errors", duration, successCount, errorCount)
-	
+
 	return results
 }
 
 // batchRetrieveFiles orchestrates the batch retrieval process.
 func batchRetrieveFiles(ctx context.Context, ghClient *github.Client, query string, resultNumbers []int) (*BatchRetrievalResult, error) {
 	log.Printf("🔄 Starting batch file retrieval process for query: '%s'", query)
-	
+
 	cachedHits, err := getQueryResults(query)
 	if err != nil {
 		log.Printf("❌ Failed to get cached query results: %v", err)
@@ -491,9 +491,9 @@ func batchRetrieveFiles(ctx context.Context, ghClient *github.Client, query stri
 	var fileRequests []GitHubFileRequest
 	requestNumberMap := make(map[int]int)
 	skipCount := 0
-	
+
 	log.Printf("🔍 Preparing GitHub file requests for %d hits", len(hitsToProcess))
-	
+
 	for i, hit := range hitsToProcess {
 		owner, repo, err := parseGitHubRepo(hit.Repo)
 		if err != nil {
@@ -519,7 +519,7 @@ func batchRetrieveFiles(ctx context.Context, ghClient *github.Client, query stri
 		finalFiles[i] = file
 		finalFiles[i].Number = requestNumberMap[file.Number]
 	}
-	
+
 	sort.Slice(finalFiles, func(i, j int) bool {
 		return finalFiles[i].Number < finalFiles[j].Number
 	})
@@ -626,7 +626,7 @@ func main() {
 	// Initialize HTTP and GitHub clients
 	log.Printf("🌐 Initializing HTTP client with 30s timeout")
 	httpClient := &http.Client{Timeout: 30 * time.Second}
-	
+
 	log.Printf("🐙 Initializing GitHub client")
 	ghClient := github.NewClient(nil)
 
@@ -676,7 +676,7 @@ func main() {
 
 			pageHits := &Hits{Hits: make(map[string]map[string]map[string]string)}
 			snippetErrors := 0
-			
+
 			for _, hit := range results.Hits.Hits {
 				parsed, err := parseSnippet(hit.Content.Snippet)
 				if err != nil {
@@ -800,7 +800,7 @@ func main() {
 		}
 
 		duration := time.Since(start)
-		
+
 		if result.Success {
 			successCount := 0
 			errorCount := 0
