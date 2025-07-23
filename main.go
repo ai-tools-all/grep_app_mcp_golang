@@ -211,6 +211,75 @@ func getQueryResults(query string) (*Hits, error) {
 }
 
 //================================================================================
+// Regex Support Functions
+//================================================================================
+
+// RegexValidationResult holds regex validation results
+type RegexValidationResult struct {
+	IsValid     bool
+	CompiledRe  *regexp.Regexp
+	Error       error
+	Pattern     string
+}
+
+// validateRegexPattern validates and compiles a regex pattern
+func validateRegexPattern(pattern string) *RegexValidationResult {
+	if pattern == "" {
+		return &RegexValidationResult{
+			IsValid: false,
+			Error:   fmt.Errorf("empty regex pattern"),
+			Pattern: pattern,
+		}
+	}
+
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return &RegexValidationResult{
+			IsValid: false,
+			Error:   fmt.Errorf("invalid regex pattern: %w", err),
+			Pattern: pattern,
+		}
+	}
+
+	return &RegexValidationResult{
+		IsValid:    true,
+		CompiledRe: compiled,
+		Error:      nil,
+		Pattern:    pattern,
+	}
+}
+
+// applyRegexFilter applies regex filtering to search results
+func applyRegexFilter(hits *Hits, regexResult *RegexValidationResult) *Hits {
+	if !regexResult.IsValid || regexResult.CompiledRe == nil {
+		return hits
+	}
+
+	filteredHits := &Hits{Hits: make(map[string]map[string]map[string]string)}
+	
+	for repo, pathData := range hits.Hits {
+		for path, lines := range pathData {
+			filteredLines := make(map[string]string)
+			
+			for lineNum, line := range lines {
+				if regexResult.CompiledRe.MatchString(line) {
+					filteredLines[lineNum] = line
+				}
+			}
+			
+			if len(filteredLines) > 0 {
+				if filteredHits.Hits[repo] == nil {
+					filteredHits.Hits[repo] = make(map[string]map[string]string)
+				}
+				filteredHits.Hits[repo][path] = filteredLines
+			}
+		}
+	}
+	
+	return filteredHits
+}
+
+//================================================================================
 // Core Logic (grep.app, GitHub, Batch)
 //================================================================================
 
@@ -641,12 +710,12 @@ func main() {
 	// --- searchCode Tool ---
 	log.Printf("🔧 Registering searchCode tool")
 	searchCodeTool := mcp.NewTool("searchCode",
-		mcp.WithDescription("Searches public code on GitHub using the grep.app API."),
-		mcp.WithString("query", mcp.Description("The search query string."), mcp.Required()),
+		mcp.WithDescription("Searches public code on GitHub using the grep.app API with enhanced regex support."),
+		mcp.WithString("query", mcp.Description("The search query string. If useRegex is true, this should be a valid Go regex pattern."), mcp.Required()),
 		mcp.WithBoolean("jsonOutput", mcp.Description("If true, return results as a JSON object.")),
 		mcp.WithBoolean("numberedOutput", mcp.Description("If true, return results as a numbered list for model selection.")),
 		mcp.WithBoolean("caseSensitive", mcp.Description("Perform a case-sensitive search.")),
-		mcp.WithBoolean("useRegex", mcp.Description("Treat the query as a regular expression.")),
+		mcp.WithBoolean("useRegex", mcp.Description("Treat the query as a regular expression. Supports Go regex syntax with client-side validation and filtering.")),
 		mcp.WithBoolean("wholeWords", mcp.Description("Search for whole words only.")),
 		mcp.WithString("repoFilter", mcp.Description("Filter by repository name pattern.")),
 		mcp.WithString("pathFilter", mcp.Description("Filter by file path pattern.")),
@@ -656,8 +725,22 @@ func main() {
 	s.AddTool(searchCodeTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := request.GetArguments()
 		query, _ := args["query"].(string)
-		log.Printf("🔍 Starting searchCode tool execution for query: '%s'", query)
+		useRegex, _ := args["useRegex"].(bool)
+		
+		log.Printf("🔍 Starting searchCode tool execution for query: '%s', useRegex: %t", query, useRegex)
 		log.Printf("📋 Tool arguments: %+v", args)
+
+		// Validate regex pattern if useRegex is enabled
+		var regexResult *RegexValidationResult
+		if useRegex {
+			log.Printf("🔧 Validating regex pattern: '%s'", query)
+			regexResult = validateRegexPattern(query)
+			if !regexResult.IsValid {
+				log.Printf("❌ Invalid regex pattern: %v", regexResult.Error)
+				return mcp.NewToolResultError(fmt.Sprintf("Invalid regex pattern: %v", regexResult.Error)), nil
+			}
+			log.Printf("✅ Regex pattern validated successfully")
+		}
 
 		start := time.Now()
 		page := 1
@@ -718,6 +801,19 @@ func main() {
 		if len(allHits.Hits) == 0 {
 			log.Printf("📭 No results found for query '%s' after %v", query, duration)
 			return mcp.NewToolResultText("No results found for your query."), nil
+		}
+
+		// Apply regex filtering if enabled
+		if useRegex && regexResult != nil && regexResult.IsValid {
+			log.Printf("🔍 Applying client-side regex filtering")
+			originalHits := len(allHits.Hits)
+			allHits = applyRegexFilter(allHits, regexResult)
+			log.Printf("🎯 Regex filtering complete: %d repos after filtering (was %d)", len(allHits.Hits), originalHits)
+			
+			if len(allHits.Hits) == 0 {
+				log.Printf("📭 No results matched regex pattern after filtering")
+				return mcp.NewToolResultText("No results matched the regex pattern."), nil
+			}
 		}
 
 		// Count final results
