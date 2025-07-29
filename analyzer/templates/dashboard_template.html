@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log Analysis Dashboard - {{.LogFileName}}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f8fafc;
+            color: #1e293b;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .header .subtitle {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .stat-card h3 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 8px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1e293b;
+        }
+        
+        .stat-card.error { border-left-color: #ef4444; }
+        .stat-card.warning { border-left-color: #f59e0b; }
+        .stat-card.success { border-left-color: #10b981; }
+        
+        .section {
+            background: white;
+            margin-bottom: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .section-header {
+            padding: 20px 25px;
+            border-bottom: 1px solid #e2e8f0;
+            background: #f8fafc;
+        }
+        
+        .section-header h2 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: #1e293b;
+        }
+        
+        .section-content {
+            padding: 25px;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .table th {
+            background: #f1f5f9;
+            padding: 12px 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #475569;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        
+        .table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .table tr:hover {
+            background: #f8fafc;
+        }
+        
+        .query-text {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            background: #f1f5f9;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        
+        .badge.success {
+            background: #dcfce7;
+            color: #166534;
+        }
+        
+        .badge.error {
+            background: #fef2f2;
+            color: #991b1b;
+        }
+        
+        .badge.warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .progress-bar {
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            height: 8px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+        
+        .progress-success { background: #10b981; }
+        .progress-error { background: #ef4444; }
+        
+        .no-data {
+            text-align: center;
+            color: #64748b;
+            font-style: italic;
+            padding: 40px;
+        }
+        
+        .timestamp {
+            font-size: 0.9rem;
+            color: #64748b;
+        }
+        
+        .duration {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .table {
+                font-size: 0.9rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Log Analysis Dashboard</h1>
+            <div class="subtitle">
+                Analysis for: <strong>{{.LogFileName}}</strong><br>
+                Generated: {{.GeneratedAt.Format "2006-01-02 15:04:05"}}
+            </div>
+        </div>
+        
+        <!-- Key Metrics -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Entries</h3>
+                <div class="value">{{.TotalEntries}}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Sessions</h3>
+                <div class="value">{{.TotalSessions}}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Searches</h3>
+                <div class="value">{{.TotalSearches}}</div>
+            </div>
+            <div class="stat-card warning">
+                <h3>Zero Result Rate</h3>
+                <div class="value">{{printf "%.1f%%" .ZeroResultRate}}</div>
+            </div>
+            <div class="stat-card success">
+                <h3>Cache Hit Rate</h3>
+                <div class="value">{{printf "%.1f%%" .CacheHitRate}}</div>
+            </div>
+            <div class="stat-card">
+                <h3>Avg Duration</h3>
+                <div class="value">{{.AvgDuration}}</div>
+            </div>
+        </div>
+        
+        <!-- Top Queries -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Top Search Queries</h2>
+            </div>
+            <div class="section-content">
+                {{if .TopQueries}}
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Query</th>
+                            <th>Count</th>
+                            <th>Success Rate</th>
+                            <th>Avg Results</th>
+                            <th>Zero Results</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .TopQueries}}
+                        <tr>
+                            <td><code class="query-text">{{.Query}}</code></td>
+                            <td>{{.Count}}</td>
+                            <td>
+                                <div class="progress-bar">
+                                    <div class="progress-fill progress-success" style="width: {{.SuccessRate}}%"></div>
+                                </div>
+                                {{printf "%.1f%%" .SuccessRate}}
+                            </td>
+                            <td>{{printf "%.1f" .AvgResults}}</td>
+                            <td>{{.ZeroResults}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{else}}
+                <div class="no-data">No search queries found</div>
+                {{end}}
+            </div>
+        </div>
+        
+        <!-- Zero Result Queries -->
+        {{if .ZeroResultQueries}}
+        <div class="section">
+            <div class="section-header">
+                <h2>Queries with Zero Results</h2>
+            </div>
+            <div class="section-content">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Query</th>
+                            <th>Total Attempts</th>
+                            <th>Zero Results</th>
+                            <th>Failure Rate</th>
+                            <th>Filters Used</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .ZeroResultQueries}}
+                        <tr>
+                            <td><code class="query-text">{{.Query}}</code></td>
+                            <td>{{.Count}}</td>
+                            <td>{{.ZeroResults}}</td>
+                            <td>
+                                <span class="badge error">{{printf "%.1f%%" .FailureRate}}</span>
+                            </td>
+                            <td>
+                                {{range $filter, $count := .Filters}}
+                                <span class="badge">{{$filter}}: {{$count}}</span>
+                                {{end}}
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{end}}
+        
+        <!-- Session Analysis -->
+        {{if .Sessions}}
+        <div class="section">
+            <div class="section-header">
+                <h2>Active Sessions</h2>
+            </div>
+            <div class="section-content">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Session ID</th>
+                            <th>Duration</th>
+                            <th>Total Queries</th>
+                            <th>Successful</th>
+                            <th>Zero Results</th>
+                            <th>Recoveries</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Sessions}}
+                        <tr>
+                            <td><code>{{slice .SessionID 0 8}}...</code></td>
+                            <td class="duration">{{.Duration}}</td>
+                            <td>{{.TotalQueries}}</td>
+                            <td>
+                                <span class="badge success">{{.SuccessQueries}}</span>
+                            </td>
+                            <td>
+                                <span class="badge error">{{len .ZeroResults}}</span>
+                            </td>
+                            <td>{{len .Recoveries}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{end}}
+        
+        <!-- Query Recovery Patterns -->
+        {{if .Sessions}}
+        {{range .Sessions}}
+        {{if .Recoveries}}
+        <div class="section">
+            <div class="section-header">
+                <h2>Recovery Patterns - Session {{slice .SessionID 0 8}}</h2>
+            </div>
+            <div class="section-content">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Failed Query</th>
+                            <th>Recovery Query</th>
+                            <th>Time Between</th>
+                            <th>Outcome</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Recoveries}}
+                        <tr>
+                            <td><code class="query-text">{{.FailedQuery}}</code></td>
+                            <td><code class="query-text">{{.RecoveryQuery}}</code></td>
+                            <td class="duration">{{.TimeBetween}}</td>
+                            <td>
+                                {{if .Successful}}
+                                <span class="badge success">Successful</span>
+                                {{else}}
+                                <span class="badge error">Failed</span>
+                                {{end}}
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{end}}
+        {{end}}
+        {{end}}
+        
+        <!-- Performance Metrics -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Performance Overview</h2>
+            </div>
+            <div class="section-content">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Average API Requests</h3>
+                        <div class="value">{{printf "%.1f" .AvgAPIRequests}}</div>
+                    </div>
+                    <div class="stat-card {{if gt .ErrorRate 5.0}}error{{else}}success{{end}}">
+                        <h3>Error Rate</h3>
+                        <div class="value">{{printf "%.1f%%" .ErrorRate}}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Cache Hit Rate</h3>
+                        <div class="value">{{printf "%.1f%%" .CacheHitRate}}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Average Duration</h3>
+                        <div class="value">{{.AvgDuration}}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

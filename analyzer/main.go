@@ -77,6 +77,7 @@ type QueryStats struct {
 	Count       int
 	ZeroResults int
 	SuccessRate float64
+	FailureRate float64
 	AvgResults  float64
 	Filters     map[string]int
 }
@@ -100,6 +101,7 @@ type QueryRecovery struct {
 
 type AnalysisReport struct {
 	GeneratedAt    time.Time
+	LogFileName    string
 	TotalEntries   int
 	TotalSessions  int
 	TotalSearches  int
@@ -138,7 +140,21 @@ func NewLogAnalyzer() *LogAnalyzer {
 	}
 }
 
-func (la *LogAnalyzer) LoadLogs(logDir string) error {
+func (la *LogAnalyzer) LoadLogs(logPath string) error {
+	// Check if it's a file or directory
+	info, err := os.Stat(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat log path: %w", err)
+	}
+	
+	if info.IsDir() {
+		return la.loadLogsFromDirectory(logPath)
+	} else {
+		return la.loadLogFile(logPath)
+	}
+}
+
+func (la *LogAnalyzer) loadLogsFromDirectory(logDir string) error {
 	log.Printf("Loading logs from directory: %s", logDir)
 	
 	err := filepath.WalkDir(logDir, func(path string, d fs.DirEntry, err error) error {
@@ -163,6 +179,7 @@ func (la *LogAnalyzer) LoadLogs(logDir string) error {
 }
 
 func (la *LogAnalyzer) loadLogFile(filePath string) error {
+	log.Printf("Processing log file: %s", filePath)
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
@@ -236,6 +253,7 @@ func (la *LogAnalyzer) AnalyzeSearchPatterns() []QueryStats {
 			}
 			
 			stat.SuccessRate = float64(stat.Count-stat.ZeroResults) / float64(stat.Count) * 100
+			stat.FailureRate = float64(stat.ZeroResults) / float64(stat.Count) * 100
 		}
 	}
 	
@@ -366,9 +384,10 @@ func (la *LogAnalyzer) findRecoveryPatterns(searchEntries []LogEntry) []QueryRec
 	return recoveries
 }
 
-func (la *LogAnalyzer) GenerateReport() *AnalysisReport {
+func (la *LogAnalyzer) GenerateReport(logFileName string) *AnalysisReport {
 	report := &AnalysisReport{
 		GeneratedAt:         time.Now(),
+		LogFileName:         logFileName,
 		TotalEntries:        len(la.entries),
 		TotalSessions:       len(la.sessions),
 		FilterEffectiveness: make(map[string]float64),
@@ -448,7 +467,7 @@ func (la *LogAnalyzer) GenerateReport() *AnalysisReport {
 //================================================================================
 
 func (la *LogAnalyzer) GenerateHTMLReport(report *AnalysisReport, outputPath string) error {
-	tmplPath := filepath.Join(filepath.Dir(outputPath), "..", "templates", "dashboard.html")
+	tmplPath := "templates/dashboard_template.html"
 	
 	tmpl, err := template.ParseFiles(tmplPath)
 	if err != nil {
@@ -468,30 +487,22 @@ func (la *LogAnalyzer) GenerateHTMLReport(report *AnalysisReport, outputPath str
 // Main Function
 //================================================================================
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go <log-directory> [output-file]")
-		fmt.Println("Example: go run main.go ../logs reports/dashboard.html")
-		os.Exit(1)
-	}
-	
-	logDir := os.Args[1]
-	outputFile := "reports/dashboard.html"
-	if len(os.Args) > 2 {
-		outputFile = os.Args[2]
-	}
-	
+func processLogFile(logFilePath string) error {
 	analyzer := NewLogAnalyzer()
 	
-	log.Printf("Starting log analysis...")
-	if err := analyzer.LoadLogs(logDir); err != nil {
-		log.Fatalf("Failed to load logs: %v", err)
+	if err := analyzer.LoadLogs(logFilePath); err != nil {
+		return fmt.Errorf("failed to load logs from %s: %w", logFilePath, err)
 	}
 	
-	log.Printf("Generating analysis report...")
-	report := analyzer.GenerateReport()
+	// Generate report filename from log filename
+	logFileName := filepath.Base(logFilePath)
+	reportFileName := strings.TrimSuffix(logFileName, filepath.Ext(logFileName)) + ".html"
+	reportPath := filepath.Join("reports", reportFileName)
 	
-	log.Printf("Analysis Summary:")
+	log.Printf("Generating analysis report for: %s", logFileName)
+	report := analyzer.GenerateReport(logFileName)
+	
+	log.Printf("Analysis Summary for %s:", logFileName)
 	log.Printf("- Total entries: %d", report.TotalEntries)
 	log.Printf("- Total sessions: %d", report.TotalSessions)
 	log.Printf("- Total searches: %d", report.TotalSearches)
@@ -499,14 +510,75 @@ func main() {
 	log.Printf("- Cache hit rate: %.1f%%", report.CacheHitRate)
 	log.Printf("- Average duration: %v", report.AvgDuration)
 	
-	log.Printf("Generating HTML report: %s", outputFile)
-	if err := os.MkdirAll(filepath.Dir(outputFile), 0755); err != nil {
-		log.Fatalf("Failed to create output directory: %v", err)
+	if err := os.MkdirAll("reports", 0755); err != nil {
+		return fmt.Errorf("failed to create reports directory: %w", err)
 	}
 	
-	if err := analyzer.GenerateHTMLReport(report, outputFile); err != nil {
-		log.Fatalf("Failed to generate HTML report: %v", err)
+	if err := analyzer.GenerateHTMLReport(report, reportPath); err != nil {
+		return fmt.Errorf("failed to generate HTML report for %s: %w", logFileName, err)
 	}
 	
-	log.Printf("✅ Analysis complete! Report saved to: %s", outputFile)
+	log.Printf("✅ Report saved to: %s", reportPath)
+	return nil
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Log Analyzer - Generate HTML reports from log files")
+		fmt.Println("")
+		fmt.Println("Usage:")
+		fmt.Println("  go run main.go <log-file>       # Analyze single log file")
+		fmt.Println("  go run main.go <log-directory>  # Analyze all .jsonl files in directory")
+		fmt.Println("")
+		fmt.Println("Examples:")
+		fmt.Println("  go run main.go ../logs/mcp-server-2025-07-29.jsonl")
+		fmt.Println("  go run main.go ../logs")
+		fmt.Println("")
+		fmt.Println("Reports are generated in the 'reports/' directory.")
+		os.Exit(1)
+	}
+	
+	logPath := os.Args[1]
+	
+	// Check if it's a file or directory
+	info, err := os.Stat(logPath)
+	if err != nil {
+		log.Fatalf("Failed to stat log path %s: %v", logPath, err)
+	}
+	
+	log.Printf("Starting log analysis...")
+	
+	if info.IsDir() {
+		// Process all .jsonl files in directory
+		log.Printf("Processing directory: %s", logPath)
+		
+		err := filepath.WalkDir(logPath, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			
+			if d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+				return nil
+			}
+			
+			log.Printf("Processing file: %s", path)
+			return processLogFile(path)
+		})
+		
+		if err != nil {
+			log.Fatalf("Failed to process directory: %v", err)
+		}
+		
+		log.Printf("✅ All files processed! Check the 'reports/' directory for HTML reports.")
+		
+	} else {
+		// Process single file
+		if !strings.HasSuffix(logPath, ".jsonl") {
+			log.Fatalf("File must have .jsonl extension: %s", logPath)
+		}
+		
+		if err := processLogFile(logPath); err != nil {
+			log.Fatalf("Failed to process file: %v", err)
+		}
+	}
 }

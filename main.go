@@ -145,12 +145,20 @@ func getCachedData[T any](cacheKey string) (*T, error) {
 	}
 
 	if time.Since(entry.Timestamp) > cacheTTL {
-		log.Printf("Cache expired for key: %s", cacheKey)
+		if logger := GetLogger(); logger != nil {
+			logger.LogDebug(fmt.Sprintf("Cache expired for key: %s", cacheKey), "cache", map[string]interface{}{"key": cacheKey})
+		} else {
+			log.Printf("Cache expired for key: %s", cacheKey)
+		}
 		os.Remove(filePath) // Delete expired cache file
 		return nil, nil     // Cache miss
 	}
 
-	log.Printf("Cache hit for key: %s", cacheKey)
+	if logger := GetLogger(); logger != nil {
+		logger.LogDebug(fmt.Sprintf("Cache hit for key: %s", cacheKey), "cache", map[string]interface{}{"key": cacheKey})
+	} else {
+		log.Printf("Cache hit for key: %s", cacheKey)
+	}
 	return &entry.Data, nil
 }
 
@@ -756,14 +764,16 @@ func main() {
 	}
 	defer CloseGlobalLogger()
 
+	logger := GetLogger()
+
 	// Initialize HTTP and GitHub clients
-	log.Printf("🌐 Initializing HTTP client with 30s timeout")
+	logger.LogInfo("🌐 Initializing HTTP client with 30s timeout", "server", nil)
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	log.Printf("🐙 Initializing GitHub client")
+	logger.LogInfo("🐙 Initializing GitHub client", "server", nil)
 	ghClient := github.NewClient(nil)
 
-	log.Printf("⚙️ Creating MCP server with tool capabilities and recovery")
+	logger.LogInfo("⚙️ Creating MCP server with tool capabilities and recovery", "server", nil)
 	s := server.NewMCPServer(
 		"GrepApp Search Server",
 		Version,
@@ -772,7 +782,7 @@ func main() {
 	)
 
 	// --- searchCode Tool ---
-	log.Printf("🔧 Registering searchCode tool")
+	logger.LogInfo("🔧 Registering searchCode tool", "server", nil)
 	searchCodeTool := mcp.NewTool("searchCode",
 		mcp.WithDescription("Searches public code on GitHub using the grep.app API with enhanced regex support."),
 		mcp.WithString("query", mcp.Description("The search query string. If useRegex is true, this should be a valid Go regex pattern."), mcp.Required()),
@@ -791,8 +801,8 @@ func main() {
 		query, _ := args["query"].(string)
 		useRegex, _ := args["useRegex"].(bool)
 		
-		log.Printf("🔍 Starting searchCode tool execution for query: '%s', useRegex: %t", query, useRegex)
-		log.Printf("📋 Tool arguments: %+v", args)
+		logger.LogInfo(fmt.Sprintf("🔍 Starting searchCode tool execution for query: '%s', useRegex: %t", query, useRegex), "searchCode", map[string]interface{}{"query": query, "useRegex": useRegex})
+		logger.LogDebug(fmt.Sprintf("📋 Tool arguments: %+v", args), "searchCode", nil)
 
 		// Log search start
 		if logger := GetLogger(); logger != nil {
@@ -802,13 +812,13 @@ func main() {
 		// Validate regex pattern if useRegex is enabled
 		var regexResult *RegexValidationResult
 		if useRegex {
-			log.Printf("🔧 Validating regex pattern: '%s'", query)
+			logger.LogDebug(fmt.Sprintf("🔧 Validating regex pattern: '%s'", query), "searchCode", map[string]interface{}{"pattern": query})
 			regexResult = validateRegexPattern(query)
 			if !regexResult.IsValid {
-				log.Printf("❌ Invalid regex pattern: %v", regexResult.Error)
+				logger.LogErrorMsg(fmt.Sprintf("❌ Invalid regex pattern: %v", regexResult.Error), "searchCode", regexResult.Error, map[string]interface{}{"pattern": query})
 				return mcp.NewToolResultError(fmt.Sprintf("Invalid regex pattern: %v", regexResult.Error)), nil
 			}
-			log.Printf("✅ Regex pattern validated successfully")
+			logger.LogInfo("✅ Regex pattern validated successfully", "searchCode", map[string]interface{}{"pattern": query})
 		}
 
 		start := time.Now()
@@ -817,14 +827,14 @@ func main() {
 		totalCount := 0
 		apiRequests := 0
 
-		log.Printf("📄 Beginning page-by-page search (max %d pages)", maxSearchPages)
+		logger.LogInfo(fmt.Sprintf("📄 Beginning page-by-page search (max %d pages)", maxSearchPages), "searchCode", map[string]interface{}{"maxPages": maxSearchPages})
 
 		for {
-			log.Printf("📖 Processing page %d", page)
+			logger.LogDebug(fmt.Sprintf("📖 Processing page %d", page), "searchCode", map[string]interface{}{"page": page})
 			results, err := fetchGrepAppPage(ctx, httpClient, args, page)
 			apiRequests++
 			if err != nil {
-				log.Printf("❌ searchCode tool failed on page %d: %v", page, err)
+				logger.LogErrorMsg(fmt.Sprintf("❌ searchCode tool failed on page %d: %v", page, err), "searchCode", err, map[string]interface{}{"page": page})
 				
 				// Log search failure
 				if logger := GetLogger(); logger != nil {
@@ -1046,7 +1056,7 @@ func main() {
 	})
 
 	// --- batchRetrievalTool ---
-	log.Printf("🔧 Registering batchRetrievalTool")
+	logger.LogInfo("🔧 Registering batchRetrievalTool", "server", nil)
 	batchRetrievalTool := mcp.NewTool("batchRetrievalTool",
 		mcp.WithDescription("Retrieve file contents for specified search results from a cached query."),
 		mcp.WithString("query", mcp.Description("The original search query."), mcp.Required()),
@@ -1147,18 +1157,20 @@ func main() {
 
 	// --- Start Server ---
 	if transport == "http" {
-		log.Printf("🚀 Starting HTTP server mode")
+		logger.LogInfo("🚀 Starting HTTP server mode", "server", nil)
 		httpServer := server.NewStreamableHTTPServer(s)
 		addr := fmt.Sprintf(":%d", port)
-		log.Printf("🌐 HTTP server listening on %s/mcp", addr)
-		log.Printf("📊 Server ready to handle MCP requests")
+		logger.LogInfo(fmt.Sprintf("🌐 HTTP server listening on %s/mcp", addr), "server", map[string]interface{}{"addr": addr})
+		logger.LogInfo("📊 Server ready to handle MCP requests", "server", nil)
 		if err := httpServer.Start(addr); err != nil {
+			logger.LogErrorMsg("💥 Server startup failed", "server", err, map[string]interface{}{"addr": addr})
 			log.Fatalf("💥 Server startup failed: %v", err)
 		}
 	} else {
-		log.Printf("🚀 Starting STDIO server mode")
-		log.Printf("📊 Server ready to handle MCP requests via stdin/stdout")
+		logger.LogInfo("🚀 Starting STDIO server mode", "server", nil)
+		logger.LogInfo("📊 Server ready to handle MCP requests via stdin/stdout", "server", nil)
 		if err := server.ServeStdio(s); err != nil {
+			logger.LogErrorMsg("💥 Server startup failed", "server", err, nil)
 			log.Fatalf("💥 Server startup failed: %v", err)
 		}
 	}

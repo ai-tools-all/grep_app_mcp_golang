@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -125,11 +126,12 @@ func (ol *ObservabilityLogger) Close() error {
 	return nil
 }
 
-// writeLogEntry writes a structured log entry to the file
+// writeLogEntry writes a structured log entry to the file and console
 func (ol *ObservabilityLogger) writeLogEntry(entry LogEntry) error {
 	entry.SessionID = ol.sessionID
 	entry.Timestamp = time.Now()
 	
+	// Write structured JSON to file
 	logLine, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("failed to marshal log entry: %w", err)
@@ -140,8 +142,35 @@ func (ol *ObservabilityLogger) writeLogEntry(entry LogEntry) error {
 		return fmt.Errorf("failed to write log entry: %w", err)
 	}
 	
-	// Ensure immediate write
-	return ol.logFile.Sync()
+	// Ensure immediate write to file
+	if err := ol.logFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync log file: %w", err)
+	}
+	
+	// Also write human-readable format to console
+	ol.writeToConsole(entry)
+	
+	return nil
+}
+
+// writeToConsole writes a human-readable log entry to console
+func (ol *ObservabilityLogger) writeToConsole(entry LogEntry) {
+	timestamp := entry.Timestamp.Format("2006-01-02 15:04:05")
+	prefix := fmt.Sprintf("[%s] %s [%s]", timestamp, entry.Level, entry.SessionID[:8])
+	
+	// Format console output based on log level
+	switch entry.Level {
+	case LogLevelError:
+		log.Printf("❌ %s %s", prefix, entry.Message)
+	case LogLevelWarn:
+		log.Printf("⚠️  %s %s", prefix, entry.Message)
+	case LogLevelInfo:
+		log.Printf("ℹ️  %s %s", prefix, entry.Message)
+	case LogLevelDebug:
+		log.Printf("🔍 %s %s", prefix, entry.Message)
+	default:
+		log.Printf("%s %s", prefix, entry.Message)
+	}
 }
 
 //================================================================================
@@ -302,6 +331,77 @@ func (ol *ObservabilityLogger) LogError(tool string, message string, err error, 
 	entry := LogEntry{
 		Level:   LogLevelError,
 		Message: fmt.Sprintf("%s: %v", message, err),
+		Tool:    tool,
+		Data:    data,
+	}
+	
+	ol.writeLogEntry(entry)
+}
+
+//================================================================================
+// General Logging Methods for Console + File
+//================================================================================
+
+// LogInfo logs an info message to both console and file
+func (ol *ObservabilityLogger) LogInfo(message string, tool string, data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	
+	entry := LogEntry{
+		Level:   LogLevelInfo,
+		Message: message,
+		Tool:    tool,
+		Data:    data,
+	}
+	
+	ol.writeLogEntry(entry)
+}
+
+// LogWarn logs a warning message to both console and file
+func (ol *ObservabilityLogger) LogWarn(message string, tool string, data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	
+	entry := LogEntry{
+		Level:   LogLevelWarn,
+		Message: message,
+		Tool:    tool,
+		Data:    data,
+	}
+	
+	ol.writeLogEntry(entry)
+}
+
+// LogErrorMsg logs an error message to both console and file
+func (ol *ObservabilityLogger) LogErrorMsg(message string, tool string, err error, data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	if err != nil {
+		data["error"] = err.Error()
+	}
+	
+	entry := LogEntry{
+		Level:   LogLevelError,
+		Message: message,
+		Tool:    tool,
+		Data:    data,
+	}
+	
+	ol.writeLogEntry(entry)
+}
+
+// LogDebug logs a debug message to both console and file
+func (ol *ObservabilityLogger) LogDebug(message string, tool string, data map[string]interface{}) {
+	if data == nil {
+		data = make(map[string]interface{})
+	}
+	
+	entry := LogEntry{
+		Level:   LogLevelDebug,
+		Message: message,
 		Tool:    tool,
 		Data:    data,
 	}
