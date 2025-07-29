@@ -27,6 +27,17 @@ import (
 )
 
 //================================================================================
+// Version Variables (injected at build time)
+//================================================================================
+
+var (
+	Version   = "1.0.0-go"        // Injected via -ldflags "-X main.Version=..."
+	GitCommit = "unknown"         // Injected via -ldflags "-X main.GitCommit=..."
+	BuildDate = "unknown"         // Injected via -ldflags "-X main.BuildDate=..."
+	BuildBy   = "unknown"         // Injected via -ldflags "-X main.BuildBy=..."
+)
+
+//================================================================================
 // Constants
 //================================================================================
 
@@ -335,10 +346,21 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	}
 	if cached != nil {
 		log.Printf("Cache hit for query '%s', page %d", query, page)
+		
+		// Log cache hit
+		if logger := GetLogger(); logger != nil {
+			logger.LogCacheOperation(cacheKey, true, query)
+		}
+		
 		return cached, nil
 	}
 
 	log.Printf("Cache miss for query '%s', page %d - fetching from API", query, page)
+	
+	// Log cache miss
+	if logger := GetLogger(); logger != nil {
+		logger.LogCacheOperation(cacheKey, false, query)
+	}
 
 	// Fetch from API
 	reqURL, _ := url.Parse(grepAppAPIBaseURL)
@@ -377,6 +399,11 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	resp, err := client.Do(req)
 	duration := time.Since(start)
 
+	// Log API request
+	if logger := GetLogger(); logger != nil {
+		logger.LogAPIRequest(reqURL.String(), duration, 0, err)
+	}
+
 	if err != nil {
 		log.Printf("HTTP request failed after %v: %v", duration, err)
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -384,6 +411,11 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 	defer resp.Body.Close()
 
 	log.Printf("HTTP request completed in %v, status: %d", duration, resp.StatusCode)
+	
+	// Update API request log with status code
+	if logger := GetLogger(); logger != nil {
+		logger.LogAPIRequest(reqURL.String(), duration, resp.StatusCode, nil)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -689,8 +721,16 @@ func main() {
 	flag.IntVar(&port, "port", 8603, "Port for http transport")
 	flag.Parse()
 
-	log.Printf("🚀 Initializing GrepApp MCP Server v1.0.0-go")
+	log.Printf("🚀 Initializing GrepApp MCP Server %s", Version)
 	log.Printf("🔧 Configuration: transport=%s, port=%d", transport, port)
+	log.Printf("📦 Build info: commit=%s, date=%s, by=%s", GitCommit, BuildDate, BuildBy)
+
+	// Initialize observability logging
+	log.Printf("📊 Initializing observability logging")
+	if err := InitGlobalLogger(logDir); err != nil {
+		log.Fatalf("💥 Failed to initialize logger: %v", err)
+	}
+	defer CloseGlobalLogger()
 
 	// Initialize HTTP and GitHub clients
 	log.Printf("🌐 Initializing HTTP client with 30s timeout")
@@ -702,7 +742,7 @@ func main() {
 	log.Printf("⚙️ Creating MCP server with tool capabilities and recovery")
 	s := server.NewMCPServer(
 		"GrepApp Search Server",
-		"1.0.0-go",
+		Version,
 		server.WithToolCapabilities(true),
 		server.WithRecovery(),
 	)
@@ -730,6 +770,11 @@ func main() {
 		log.Printf("🔍 Starting searchCode tool execution for query: '%s', useRegex: %t", query, useRegex)
 		log.Printf("📋 Tool arguments: %+v", args)
 
+		// Log search start
+		if logger := GetLogger(); logger != nil {
+			logger.LogSearchStart(query, args)
+		}
+
 		// Validate regex pattern if useRegex is enabled
 		var regexResult *RegexValidationResult
 		if useRegex {
@@ -746,14 +791,31 @@ func main() {
 		page := 1
 		allHits := &Hits{}
 		totalCount := 0
+		apiRequests := 0
 
 		log.Printf("📄 Beginning page-by-page search (max %d pages)", maxSearchPages)
 
 		for {
 			log.Printf("📖 Processing page %d", page)
 			results, err := fetchGrepAppPage(ctx, httpClient, args, page)
+			apiRequests++
 			if err != nil {
 				log.Printf("❌ searchCode tool failed on page %d: %v", page, err)
+				
+				// Log search failure
+				if logger := GetLogger(); logger != nil {
+					searchData := SearchLogData{
+						Query:        query,
+						UseRegex:     useRegex,
+						Success:      false,
+						Error:        err.Error(),
+						Duration:     time.Since(start),
+						APIRequests:  apiRequests,
+						PagesScanned: page,
+					}
+					logger.LogSearchComplete(searchData)
+				}
+				
 				return mcp.NewToolResultError(fmt.Sprintf("API fetch failed: %v", err)), nil
 			}
 
@@ -800,6 +862,40 @@ func main() {
 
 		if len(allHits.Hits) == 0 {
 			log.Printf("📭 No results found for query '%s' after %v", query, duration)
+			
+			// Log zero results
+			if logger := GetLogger(); logger != nil {
+				filters := make(map[string]string)
+				if v, ok := args["repoFilter"].(string); ok && v != "" {
+					filters["repo"] = v
+				}
+				if v, ok := args["pathFilter"].(string); ok && v != "" {
+					filters["path"] = v
+				}
+				if v, ok := args["langFilter"].(string); ok && v != "" {
+					filters["lang"] = v
+				}
+				
+				caseSensitive, _ := args["caseSensitive"].(bool)
+				wholeWords, _ := args["wholeWords"].(bool)
+				
+				searchData := SearchLogData{
+					Query:         query,
+					UseRegex:      useRegex,
+					CaseSensitive: caseSensitive,
+					WholeWords:    wholeWords,
+					Filters:       filters,
+					ResultCount:   0,
+					FileCount:     0,
+					LineCount:     0,
+					Duration:      duration,
+					Success:       true,
+					APIRequests:   apiRequests,
+					PagesScanned:  page - 1,
+				}
+				logger.LogSearchComplete(searchData)
+			}
+			
 			return mcp.NewToolResultText("No results found for your query."), nil
 		}
 
@@ -812,6 +908,41 @@ func main() {
 			
 			if len(allHits.Hits) == 0 {
 				log.Printf("📭 No results matched regex pattern after filtering")
+				
+				// Log regex filtered zero results
+				if logger := GetLogger(); logger != nil {
+					filters := make(map[string]string)
+					if v, ok := args["repoFilter"].(string); ok && v != "" {
+						filters["repo"] = v
+					}
+					if v, ok := args["pathFilter"].(string); ok && v != "" {
+						filters["path"] = v
+					}
+					if v, ok := args["langFilter"].(string); ok && v != "" {
+						filters["lang"] = v
+					}
+					
+					caseSensitive, _ := args["caseSensitive"].(bool)
+					wholeWords, _ := args["wholeWords"].(bool)
+					
+					searchData := SearchLogData{
+						Query:         query,
+						UseRegex:      useRegex,
+						CaseSensitive: caseSensitive,
+						WholeWords:    wholeWords,
+						Filters:       filters,
+						ResultCount:   0,
+						FileCount:     0,
+						LineCount:     0,
+						Duration:      duration,
+						Success:       true,
+						APIRequests:   apiRequests,
+						PagesScanned:  page - 1,
+						RegexFiltered: true,
+					}
+					logger.LogSearchComplete(searchData)
+				}
+				
 				return mcp.NewToolResultText("No results matched the regex pattern."), nil
 			}
 		}
@@ -827,6 +958,40 @@ func main() {
 		}
 
 		log.Printf("🎯 Search completed successfully in %v: %d repos, %d files, %d matched lines", duration, len(allHits.Hits), totalFiles, totalLines)
+
+		// Log successful search completion
+		if logger := GetLogger(); logger != nil {
+			filters := make(map[string]string)
+			if v, ok := args["repoFilter"].(string); ok && v != "" {
+				filters["repo"] = v
+			}
+			if v, ok := args["pathFilter"].(string); ok && v != "" {
+				filters["path"] = v
+			}
+			if v, ok := args["langFilter"].(string); ok && v != "" {
+				filters["lang"] = v
+			}
+			
+			caseSensitive, _ := args["caseSensitive"].(bool)
+			wholeWords, _ := args["wholeWords"].(bool)
+			
+			searchData := SearchLogData{
+				Query:         query,
+				UseRegex:      useRegex,
+				CaseSensitive: caseSensitive,
+				WholeWords:    wholeWords,
+				Filters:       filters,
+				ResultCount:   len(allHits.Hits),
+				FileCount:     totalFiles,
+				LineCount:     totalLines,
+				Duration:      duration,
+				Success:       true,
+				APIRequests:   apiRequests,
+				PagesScanned:  page - 1,
+				RegexFiltered: useRegex && regexResult != nil && regexResult.IsValid,
+			}
+			logger.LogSearchComplete(searchData)
+		}
 
 		// Cache the complete result for batch retrieval
 		completeCacheKey := generateCacheKey(map[string]interface{}{"query": query, "complete": true})
@@ -886,27 +1051,61 @@ func main() {
 			}
 		}
 
+		// Log batch retrieval start
+		if logger := GetLogger(); logger != nil {
+			logger.LogBatchRetrievalStart(query, resultNumbers)
+		}
+
 		log.Printf("🔍 Retrieving files for query: '%s', result numbers: %v", query, resultNumbers)
 
 		result, err := batchRetrieveFiles(ctx, ghClient, query, resultNumbers)
+		duration := time.Since(start)
+		
 		if err != nil {
-			duration := time.Since(start)
 			log.Printf("❌ batchRetrievalTool failed after %v: %v", duration, err)
+			
+			// Log batch retrieval failure
+			if logger := GetLogger(); logger != nil {
+				batchData := BatchRetrievalLogData{
+					Query:         query,
+					RequestedNums: resultNumbers,
+					Duration:      duration,
+					Success:       false,
+					Error:         err.Error(),
+				}
+				logger.LogBatchRetrievalComplete(batchData)
+			}
+			
 			return mcp.NewToolResultError(fmt.Sprintf("batch retrieval failed: %v", err)), nil
 		}
 
-		duration := time.Since(start)
+		// Count success/error files
+		successCount := 0
+		errorCount := 0
+		for _, file := range result.Files {
+			if file.Error == "" {
+				successCount++
+			} else {
+				errorCount++
+			}
+		}
+
+		// Log batch retrieval completion
+		if logger := GetLogger(); logger != nil {
+			batchData := BatchRetrievalLogData{
+				Query:         query,
+				RequestedNums: resultNumbers,
+				FilesFound:    len(result.Files),
+				FilesSuccess:  successCount,
+				FilesError:    errorCount,
+				Duration:      duration,
+				Success:       result.Success,
+				Error:         result.Error,
+			}
+			logger.LogBatchRetrievalComplete(batchData)
+		}
 
 		if result.Success {
-			successCount := 0
-			errorCount := 0
-			for _, file := range result.Files {
-				if file.Error == "" {
-					successCount++
-				} else {
-					errorCount++
-				}
-			}
 			log.Printf("🎯 batchRetrievalTool completed successfully in %v: %d files retrieved, %d errors", duration, successCount, errorCount)
 		} else {
 			log.Printf("⚠️ batchRetrievalTool completed with errors in %v: %s", duration, result.Error)
