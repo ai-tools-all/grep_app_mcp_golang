@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cross-platform build script for Android and Linux binaries
+# Cross-platform build script for Linux, macOS, and Android binaries
 # Usage: ./build_cross_platform.sh [all] [--compress]
 # Default: builds only for Linux
 # Use 'all' argument to build for all platforms
@@ -12,7 +12,8 @@ OUTPUT_DIR="build"
 BINARY_NAME="grep_app_mcp"
 
 # Get version information
-VERSION=${VERSION:-"1.0.0"}
+# Priority: git tag -> VERSION env var -> default
+VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "${VERSION:-1.0.0}")
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%S%Z)
 BUILD_USER=$(whoami)
@@ -68,6 +69,14 @@ if [ "$BUILD_ALL" = true ]; then
     # Build for Linux (arm64)
     echo -e "${YELLOW}Building for Linux ARM64 (linux/arm64)...${NC}"
     GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/${BINARY_NAME}_linux_arm64" .
+    
+    # Build for macOS (darwin/amd64)
+    echo -e "${YELLOW}Building for macOS Intel (darwin/amd64)...${NC}"
+    GOOS=darwin GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/${BINARY_NAME}_darwin_amd64" .
+    
+    # Build for macOS Apple Silicon (darwin/arm64)
+    echo -e "${YELLOW}Building for macOS Apple Silicon (darwin/arm64)...${NC}"
+    GOOS=darwin GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o "$OUTPUT_DIR/${BINARY_NAME}_darwin_arm64" .
 fi
 
 # Only build Android if 'all' is specified
@@ -140,6 +149,8 @@ echo -e "${BLUE}Linux x86_64:${NC} $OUTPUT_DIR/${BINARY_NAME}_linux_amd64"
 
 if [ "$BUILD_ALL" = true ]; then
     echo -e "${BLUE}Linux ARM64:${NC} $OUTPUT_DIR/${BINARY_NAME}_linux_arm64"
+    echo -e "${BLUE}macOS Intel:${NC} $OUTPUT_DIR/${BINARY_NAME}_darwin_amd64"
+    echo -e "${BLUE}macOS Apple Silicon:${NC} $OUTPUT_DIR/${BINARY_NAME}_darwin_arm64"
     if [ -n "$NDK_PATH" ]; then
         echo -e "${BLUE}Android ARM64:${NC} $OUTPUT_DIR/${BINARY_NAME}_android_arm64"
         echo -e "${BLUE}Android x86_64:${NC} $OUTPUT_DIR/${BINARY_NAME}_android_amd64"

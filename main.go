@@ -717,9 +717,33 @@ func formatResultsAsNumberedList(hits *Hits) string {
 func main() {
 	var transport string
 	var port int
+	var showVersion bool
+	
+	// Custom usage function to show version info
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "GrepApp MCP Server %s (commit: %s)\n\n", Version, GitCommit)
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nBuild Information:\n")
+		fmt.Fprintf(os.Stderr, "  Version: %s\n", Version)
+		fmt.Fprintf(os.Stderr, "  Git Commit: %s\n", GitCommit)
+		fmt.Fprintf(os.Stderr, "  Build Date: %s\n", BuildDate)
+		fmt.Fprintf(os.Stderr, "  Built By: %s\n", BuildBy)
+	}
+	
 	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio or http)")
 	flag.IntVar(&port, "port", 8603, "Port for http transport")
+	flag.BoolVar(&showVersion, "version", false, "Show version information and exit")
 	flag.Parse()
+
+	// Handle version flag
+	if showVersion {
+		fmt.Printf("GrepApp MCP Server %s\n", Version)
+		fmt.Printf("Git Commit: %s\n", GitCommit)
+		fmt.Printf("Build Date: %s\n", BuildDate)
+		fmt.Printf("Built By: %s\n", BuildBy)
+		os.Exit(0)
+	}
 
 	log.Printf("🚀 Initializing GrepApp MCP Server %s", Version)
 	log.Printf("🔧 Configuration: transport=%s, port=%d", transport, port)
