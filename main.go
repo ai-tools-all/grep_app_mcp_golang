@@ -298,6 +298,7 @@ func applyRegexFilter(hits *Hits, regexResult *RegexValidationResult) *Hits {
 	return filteredHits
 }
 
+
 //================================================================================
 // Core Logic (grep.app, GitHub, Batch)
 //================================================================================
@@ -343,7 +344,30 @@ func mergeHits(target, source *Hits) {
 // fetchGrepAppPage fetches a single page of results from the grep.app API, using cache if available.
 func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]interface{}, page int) (*GrepAppResponse, error) {
 	query, _ := args["query"].(string)
-	cacheKey := generateCacheKey(map[string]interface{}{"query": query, "page": page})
+	// Include all relevant parameters in cache key to avoid conflicts
+	cacheKeyObj := map[string]interface{}{
+		"query": query, 
+		"page": page,
+	}
+	if repoFilter, ok := args["repoFilter"].(string); ok && repoFilter != "" {
+		cacheKeyObj["repoFilter"] = repoFilter
+	}
+	if caseSensitive, ok := args["caseSensitive"].(bool); ok && caseSensitive {
+		cacheKeyObj["caseSensitive"] = caseSensitive
+	}
+	if useRegex, ok := args["useRegex"].(bool); ok && useRegex {
+		cacheKeyObj["useRegex"] = useRegex
+	}
+	if wholeWords, ok := args["wholeWords"].(bool); ok && wholeWords {
+		cacheKeyObj["wholeWords"] = wholeWords
+	}
+	if pathFilter, ok := args["pathFilter"].(string); ok && pathFilter != "" {
+		cacheKeyObj["pathFilter"] = pathFilter
+	}
+	if langFilter, ok := args["langFilter"].(string); ok && langFilter != "" {
+		cacheKeyObj["langFilter"] = langFilter
+	}
+	cacheKey := generateCacheKey(cacheKeyObj)
 
 	log.Printf("Fetching page %d for query: %s", page, query)
 
@@ -385,7 +409,7 @@ func fetchGrepAppPage(ctx context.Context, client *http.Client, args map[string]
 		q.Set("words", "1")
 	}
 	if v, ok := args["repoFilter"].(string); ok && v != "" {
-		q.Set("repo", v)
+		q.Set("f.repo", v)
 	}
 	if v, ok := args["pathFilter"].(string); ok && v != "" {
 		q.Set("path", v)
@@ -981,6 +1005,8 @@ func main() {
 			}
 		}
 
+	
+
 		// Count final results
 		totalFiles := 0
 		totalLines := 0
@@ -988,6 +1014,22 @@ func main() {
 			for _, fileData := range repoData {
 				totalFiles++
 				totalLines += len(fileData)
+			}
+		}
+
+		// Log repository filtering validation for analysis
+		if repoFilter, ok := args["repoFilter"].(string); ok && repoFilter != "" {
+			log.Printf("🔍 repoFilter validation - requested: '%s'", repoFilter)
+			foundRepos := make([]string, 0, len(allHits.Hits))
+			for repo := range allHits.Hits {
+				foundRepos = append(foundRepos, repo)
+			}
+			if len(foundRepos) == 1 && foundRepos[0] == repoFilter {
+				log.Printf("✅ repoFilter SUCCESS - all results from: '%s'", foundRepos[0])
+			} else if len(foundRepos) == 0 {
+				log.Printf("❌ repoFilter EMPTY - no results found for: '%s'", repoFilter)
+			} else {
+				log.Printf("❌ repoFilter MISMATCH - requested: '%s', found: %v", repoFilter, foundRepos)
 			}
 		}
 
