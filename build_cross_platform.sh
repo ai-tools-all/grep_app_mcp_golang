@@ -12,8 +12,24 @@ OUTPUT_DIR="build"
 BINARY_NAME="grep_app_mcp"
 
 # Get version information
-# Priority: git tag -> VERSION env var -> default
-VERSION=$(git describe --tags --exact-match 2>/dev/null || echo "${VERSION:-1.0.0}")
+# Try to get version from git tag
+VERSION=$(git describe --tags --exact-match 2>/dev/null)
+
+# If no git tag exists, prompt for version
+if [ -z "$VERSION" ]; then
+    echo -e "${YELLOW}No git tag found at current commit.${NC}"
+    echo -e "${YELLOW}Please provide a version (e.g., v1.2.3):${NC}"
+    read -p "Version: " VERSION
+    
+    # Validate version input
+    if [ -z "$VERSION" ]; then
+        echo -e "${RED}Version cannot be empty. Exiting.${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}Using version: ${VERSION}${NC}"
+fi
+
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%S%Z)
 BUILD_USER=$(whoami)
